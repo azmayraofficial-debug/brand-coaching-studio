@@ -184,7 +184,7 @@ Jawaban klien: "${answer}"
 Berikan feedback singkat 2-3 kalimat: validasi jawaban mereka dan satu saran spesifik untuk memperkuatnya.
 Gunakan bahasa Indonesia yang hangat dan supportif. Langsung ke feedbacknya tanpa pembuka "Bagus!" atau "Oke!".`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -257,7 +257,7 @@ function QuestionScreen({ mod, qIndex, answers, onAnswer, onBack, brandContext }
     try {
       const fb = await getAIFeedback(q.q, input.trim(), brandContext);
       setFeedback(fb);
-    } catch { setFeedback("Jawaban kamu sudah tersimpan. Lanjut ke pertanyaan berikutnya!"); }
+    } catch (e) { setFeedback("Jawaban tersimpan ✓ (AI feedback tidak tersedia — periksa API key di Vercel)"); }
     finally { setLoadingFeedback(false); }
   }
 
@@ -386,20 +386,24 @@ function ResultScreen({ answers, onRestart }) {
     }).filter(Boolean).join("\n");
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
           messages: [{
             role: "user", content: `Berdasarkan brand document lengkap berikut, susun brand strategy komprehensif:\n\n${ctx}\n\nFormat output:\n## Brand Summary\n## Positioning Statement Final\n## Prioritas Eksekusi 30 Hari\n## Pilar Konten Final\n## Big Idea Kampanye\n## KPI yang Harus Ditrack\n\nBahasa Indonesia, spesifik dan actionable.`
           }],
         }),
       });
       const data = await res.json();
-      setStrategy(data.content?.map(b => b.text || "").join("") || "");
-    } catch { setStrategy("Gagal generate. Coba lagi."); }
+      if (data.error) {
+        setStrategy(`❌ Error: ${data.error}\n\nPastikan ANTHROPIC_API_KEY sudah di-set di Vercel → Settings → Environment Variables, lalu Redeploy.`);
+      } else {
+        setStrategy(data.content?.map(b => b.text || "").join("") || "Response kosong.");
+      }
+    } catch (e) {
+      setStrategy(`❌ Gagal koneksi ke /api/chat: ${e.message}\n\nPastikan file api/chat.js sudah ada di GitHub repository kamu.`);
+    }
     finally { setStrategyLoading(false); }
   }
 
@@ -505,9 +509,188 @@ function ResultScreen({ answers, onRestart }) {
   );
 }
 
+// ── UPLOAD SCREEN ─────────────────────────────────────────────────────────────
+function UploadScreen({ onBack, onImport }) {
+  const [file, setFile] = useState(null);
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [dragging, setDragging] = useState(false);
+
+  function handleFile(f) {
+    if (!f) return;
+    const allowed = ["application/pdf", "text/plain", "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+    if (!allowed.includes(f.type) && !f.name.match(/\.(pdf|txt|doc|docx)$/i)) {
+      setError("Format yang didukung: PDF, TXT, DOC, DOCX");
+      return;
+    }
+    setFile(f);
+    setError(null);
+    // Read as text for txt/doc
+    const reader = new FileReader();
+    reader.onload = e => setText(e.target.result);
+    reader.readAsText(f);
+  }
+
+  async function handleExtract() {
+    if (!text.trim() && !file) return setError("Upload file atau paste teks dulu.");
+    setLoading(true);
+    setError(null);
+
+    const content = text.trim() || `File: ${file?.name}`;
+    const prompt = `Kamu adalah brand strategist. Ekstrak informasi brand dari dokumen berikut dan petakan ke format JSON.
+
+DOKUMEN:
+${content.slice(0, 4000)}
+
+Ekstrak dan return HANYA JSON valid (tanpa markdown, tanpa penjelasan) dengan struktur berikut. Isi dengan informasi yang ada, kosongkan string jika tidak ada:
+{
+  "brand_name": "",
+  "brand_philosophy": "",
+  "product_category": "",
+  "brand_purpose": "",
+  "audience_demo": "",
+  "audience_psycho": "",
+  "audience_behavior": "",
+  "audience_pain": "",
+  "competitors_main": "",
+  "competitors_strength": "",
+  "competitors_gap": "",
+  "brand_diff": "",
+  "usp": "",
+  "positioning_statement": "",
+  "brand_goal": "",
+  "brand_tagline": "",
+  "brand_personality": "",
+  "tone_manner": "",
+  "one_single_message": "",
+  "big_idea": "",
+  "content_pillars": "",
+  "content_angle": "",
+  "content_formula": "",
+  "content_distribution": ""
+}`;
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
+      });
+      const data = await res.json();
+      const raw = data.content?.map(b => b.text || "").join("") || "";
+      const cleaned = raw.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(cleaned);
+      const filled = Object.fromEntries(Object.entries(parsed).filter(([, v]) => v && v.trim()));
+      onImport(filled);
+    } catch (e) {
+      setError("Gagal ekstrak data. Pastikan dokumen berisi informasi brand yang cukup.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#F9FAFB", fontFamily: "'Inter', -apple-system, sans-serif" }}>
+      <div style={{ background: `linear-gradient(135deg, ${O} 0%, ${O2} 100%)`, padding: "16px 20px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "white" }}>←</button>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15, color: "white" }}>Import Data Brand</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,.8)" }}>Upload dokumen brand yang sudah ada</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "24px 16px 60px" }}>
+        <div style={{ background: OL, border: `1.5px solid ${OM}`, borderRadius: 14, padding: 16, marginBottom: 24 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: O, marginBottom: 6 }}>💡 Cara kerja fitur ini</div>
+          <div style={{ fontSize: 12.5, color: MID, lineHeight: 1.65 }}>
+            Jika brand kamu sudah punya dokumen brand guideline, brief, atau catatan strategi — upload di sini. AI akan membaca dan mengekstrak informasi ke dalam semua 24 pertanyaan coaching secara otomatis. Kamu bisa review dan edit hasilnya setelahnya.
+          </div>
+        </div>
+
+        {/* Upload Zone */}
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={e => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
+          style={{
+            border: `2px dashed ${dragging ? O : file ? O : "#D1D5DB"}`,
+            borderRadius: 16, padding: "32px 20px", textAlign: "center",
+            background: dragging ? OL : file ? OL : "white",
+            marginBottom: 16, transition: "all .2s", cursor: "pointer",
+          }}
+          onClick={() => document.getElementById("file-input").click()}
+        >
+          <input
+            id="file-input" type="file" accept=".pdf,.txt,.doc,.docx" style={{ display: "none" }}
+            onChange={e => handleFile(e.target.files[0])}
+          />
+          {file ? (
+            <>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>📄</div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: O, marginBottom: 4 }}>{file.name}</div>
+              <div style={{ fontSize: 12, color: GRAY }}>{(file.size / 1024).toFixed(1)} KB · Klik untuk ganti file</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>⬆️</div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: DARK, marginBottom: 4 }}>Drag & drop atau klik untuk upload</div>
+              <div style={{ fontSize: 12, color: GRAY }}>PDF, TXT, DOC, DOCX · Maks 5MB</div>
+            </>
+          )}
+        </div>
+
+        {/* Or paste text */}
+        <div style={{ textAlign: "center", color: GRAY, fontSize: 12, marginBottom: 12, fontWeight: 600 }}>— ATAU —</div>
+        <div style={{ marginBottom: 20 }}>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: DARK, marginBottom: 6 }}>Paste teks langsung</label>
+          <textarea
+            value={text}
+            onChange={e => { setText(e.target.value); setFile(null); }}
+            placeholder="Paste brand guideline, brief, atau catatan strategi brand kamu di sini..."
+            rows={7}
+            style={{
+              width: "100%", padding: "13px", borderRadius: 12,
+              border: "1.5px solid #E5E7EB", fontSize: 13, lineHeight: 1.6,
+              color: DARK, fontFamily: "inherit", resize: "vertical",
+              boxSizing: "border-box", outline: "none",
+            }}
+          />
+        </div>
+
+        {error && (
+          <div style={{ background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 13, color: "#DC2626" }}>
+            {error}
+          </div>
+        )}
+
+        <button
+          onClick={handleExtract}
+          disabled={loading || (!file && !text.trim())}
+          style={{
+            width: "100%", padding: "14px", borderRadius: 12, border: "none",
+            background: loading || (!file && !text.trim()) ? "#E5E7EB" : `linear-gradient(135deg, ${O} 0%, ${O2} 100%)`,
+            color: loading || (!file && !text.trim()) ? GRAY : "white",
+            fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit",
+          }}
+        >
+          {loading ? "🤖 AI sedang membaca dokumen..." : "✨ Ekstrak Data Brand Otomatis"}
+        </button>
+
+        <div style={{ marginTop: 14, fontSize: 12, color: GRAY, textAlign: "center", lineHeight: 1.6 }}>
+          Setelah diekstrak, kamu bisa review dan edit setiap jawaban di modul coaching.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [screen, setScreen] = useState("home");
+  const [screen, setScreen] = useState("home"); // home | upload | question | mod_complete | result
   const [activeModIndex, setActiveModIndex] = useState(0);
   const [activeQIndex, setActiveQIndex] = useState(0);
   const [answers, setAnswers] = useState({});
@@ -588,6 +771,18 @@ export default function App() {
     </div>
   );
 
+  function handleImport(extracted) {
+    const newAnswers = { ...answers, ...extracted };
+    const newCompleted = MODULES
+      .filter(mod => mod.questions.every(q => newAnswers[q.id]))
+      .map(m => m.id);
+    setAnswers(newAnswers);
+    setCompletedMods(newCompleted);
+    persist(newAnswers, newCompleted);
+    setScreen("home");
+  }
+
+  if (screen === "upload") return <UploadScreen onBack={() => setScreen("home")} onImport={handleImport} />;
   if (screen === "question") return <QuestionScreen mod={MODULES[activeModIndex]} qIndex={activeQIndex} answers={answers} onAnswer={handleAnswer} onBack={() => setScreen("home")} brandContext={brandContext} />;
   if (screen === "mod_complete") return <ModuleCompleteScreen mod={MODULES[activeModIndex]} onContinue={handleModContinue} isLastModule={activeModIndex === MODULES.length - 1} />;
   if (screen === "result") return <ResultScreen answers={answers} onRestart={() => { setAnswers({}); setCompletedMods([]); persist({}, []); setScreen("home"); }} />;
@@ -619,6 +814,24 @@ export default function App() {
       </div>
 
       <div style={{ maxWidth: 600, margin: "0 auto", padding: "20px 16px 60px" }}>
+        {/* Upload shortcut — always visible */}
+        <div style={{
+          background: WHITE, border: "1.5px solid #E5E7EB", borderRadius: 14,
+          padding: "14px 16px", marginBottom: 16,
+          display: "flex", alignItems: "center", gap: 14,
+        }}>
+          <div style={{ fontSize: 28 }}>📂</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 13.5, color: DARK, marginBottom: 2 }}>Sudah punya data brand?</div>
+            <div style={{ fontSize: 12, color: GRAY }}>Upload dokumen & AI isi semua jawaban otomatis</div>
+          </div>
+          <button onClick={() => setScreen("upload")} style={{
+            padding: "8px 14px", borderRadius: 9, border: `1.5px solid ${O}`,
+            background: "transparent", color: O, fontSize: 12, fontWeight: 700,
+            cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
+          }}>Upload →</button>
+        </div>
+
         {answeredQ === 0 && (
           <div style={{ background: OL, border: `1.5px solid ${OM}`, borderRadius: 14, padding: 16, marginBottom: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: O, marginBottom: 6 }}>✨ Cara kerja coaching ini</div>
