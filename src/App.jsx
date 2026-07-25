@@ -368,6 +368,8 @@ function ModuleCompleteScreen({ mod, onContinue, isLastModule }) {
 function ResultScreen({ answers, onRestart }) {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [strategyLoading, setStrategyLoading] = useState(false);
+  const [strategyPdfLoading, setStrategyPdfLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [strategy, setStrategy] = useState(null);
   const brandName = answers["brand_name"] || "Brand Kamu";
 
@@ -376,6 +378,81 @@ function ResultScreen({ answers, onRestart }) {
     try { await exportBrandDoc(answers, brandName); }
     catch (e) { alert("Gagal export: " + e.message); }
     finally { setPdfLoading(false); }
+  }
+
+  async function handleStrategyPDF() {
+    if (!strategy) return;
+    setStrategyPdfLoading(true);
+    try {
+      if (!window.jspdf) {
+        await new Promise((res, rej) => {
+          const s = document.createElement("script");
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+          s.onload = res; s.onerror = rej; document.head.appendChild(s);
+        });
+      }
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const W = 210, MARGIN = 18, CW = W - MARGIN * 2;
+      const dateStr = new Date().toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+
+      // Cover header
+      doc.setFillColor(242, 101, 34);
+      doc.rect(0, 0, W, 50, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9); doc.text("BRAND COACHING STUDIO", MARGIN, 16);
+      doc.setFontSize(22); doc.text("Brand Strategy", MARGIN, 30);
+      doc.setFontSize(12); doc.setFont("helvetica", "normal");
+      doc.text(`${brandName}  ·  ${dateStr}`, MARGIN, 43);
+
+      let y = 62;
+      const lines = strategy.split("\n");
+      lines.forEach(line => {
+        if (y > 270) { doc.addPage(); y = MARGIN; }
+        if (line.startsWith("## ")) {
+          y += 4;
+          doc.setFillColor(255, 243, 237);
+          doc.rect(MARGIN, y - 5, CW, 10, "F");
+          doc.setTextColor(242, 101, 34);
+          doc.setFont("helvetica", "bold"); doc.setFontSize(11);
+          doc.text(line.replace("## ", ""), MARGIN + 3, y + 2);
+          y += 12;
+        } else if (/^[-•]/.test(line) || /^\d+\./.test(line)) {
+          const cleaned = line.replace(/^[-•\d.]\s*/, "").replace(/\*\*/g, "");
+          doc.setFillColor(242, 101, 34);
+          doc.circle(MARGIN + 2, y - 1, 1, "F");
+          doc.setTextColor(55, 65, 81);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+          const wrapped = doc.splitTextToSize(cleaned, CW - 8);
+          if (y + wrapped.length * 4.5 > 275) { doc.addPage(); y = MARGIN; }
+          doc.text(wrapped, MARGIN + 6, y);
+          y += wrapped.length * 4.5 + 2;
+        } else if (line.trim()) {
+          doc.setTextColor(55, 65, 81);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+          const cleaned = line.replace(/\*\*/g, "");
+          const wrapped = doc.splitTextToSize(cleaned, CW);
+          if (y + wrapped.length * 4.5 > 275) { doc.addPage(); y = MARGIN; }
+          doc.text(wrapped, MARGIN, y);
+          y += wrapped.length * 4.5 + 2;
+        } else { y += 4; }
+      });
+
+      // Page numbers
+      const total = doc.getNumberOfPages();
+      for (let p = 1; p <= total; p++) {
+        doc.setPage(p);
+        doc.setFillColor(249, 250, 251);
+        doc.rect(0, 287, W, 10, "F");
+        doc.setTextColor(156, 163, 175);
+        doc.setFontSize(7); doc.setFont("helvetica", "normal");
+        doc.text(`Brand Strategy  ·  ${brandName}`, MARGIN, 293);
+        doc.text(`${p} / ${total}`, W - MARGIN, 293, { align: "right" });
+      }
+      doc.save(`brand-strategy-${brandName.toLowerCase().replace(/\s+/g, "-")}.pdf`);
+    } catch(e) { alert("Gagal export PDF: " + e.message); }
+    finally { setStrategyPdfLoading(false); }
   }
 
   async function generateStrategy() {
@@ -472,7 +549,14 @@ function ResultScreen({ answers, onRestart }) {
           <div style={{ background: WHITE, borderRadius: 14, border: "1.5px solid #E5E7EB", padding: 20, marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <div style={{ fontWeight: 700, fontSize: 14, color: DARK }}>Brand Strategy — {brandName}</div>
-              <button onClick={() => navigator.clipboard.writeText(strategy)} style={{ padding: "5px 12px", borderRadius: 8, border: `1.5px solid ${O}`, background: "transparent", color: O, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Copy</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => { navigator.clipboard.writeText(strategy); setCopied(true); setTimeout(() => setCopied(false), 2000); }} style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${O}`, background: "transparent", color: O, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                  {copied ? "✓ Copied" : "Copy"}
+                </button>
+                <button onClick={handleStrategyPDF} disabled={strategyPdfLoading} style={{ padding: "6px 12px", borderRadius: 8, border: "none", background: strategyPdfLoading ? "#E5E7EB" : `linear-gradient(135deg, ${O} 0%, ${O2} 100%)`, color: strategyPdfLoading ? GRAY : WHITE, fontSize: 11, fontWeight: 700, cursor: strategyPdfLoading ? "not-allowed" : "pointer" }}>
+                  {strategyPdfLoading ? "..." : "⬇ PDF"}
+                </button>
+              </div>
             </div>
             {renderMd(strategy)}
           </div>
