@@ -17,33 +17,44 @@ export default async function handler(req) {
 
   try {
     const body = await req.json();
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.GROQ_API_KEY;
 
     if (!apiKey) {
-      return new Response(JSON.stringify({ error: "API key not configured" }), {
+      return new Response(JSON.stringify({ error: "GROQ_API_KEY not configured in Vercel Environment Variables" }), {
         status: 500,
         headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
       });
     }
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "llama-3.3-70b-versatile",
         max_tokens: 1500,
         messages: body.messages,
       }),
     });
 
     const data = await response.json();
-    return new Response(JSON.stringify(data), {
+
+    if (data.choices && data.choices[0]) {
+      const converted = {
+        content: [{ type: "text", text: data.choices[0].message.content }]
+      };
+      return new Response(JSON.stringify(converted), {
+        headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ error: data.error?.message || "Empty response from Groq" }), {
+      status: 500,
       headers: { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" },
     });
+
   } catch (err) {
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
